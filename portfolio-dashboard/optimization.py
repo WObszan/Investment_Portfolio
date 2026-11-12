@@ -78,6 +78,18 @@ def get_portfolio_var(weights: np.ndarray, cov_matrix: pd.DataFrame) -> float:
     return np.dot(weights.T, np.dot(cov_matrix, weights))
 
 
+def annual_portfolio_var(weights: np.ndarray, cov_matrix: pd.DataFrame) -> float:
+    """Annualized portfolio variance; used as the optimizer objective.
+
+    Raw daily variance (~1e-4) is so small that SLSQP's default tolerance stops at the
+    starting point, so the objective is annualized and a tight ftol is used.
+    """
+    return get_portfolio_var(weights, cov_matrix) * TRADING_DAYS_PER_YEAR
+
+
+SLSQP_OPTIONS = {"ftol": 1e-12, "maxiter": 1000}
+
+
 def weights_sum_to_one(weights: np.ndarray) -> float:
     return np.sum(weights) - 1
 
@@ -143,11 +155,12 @@ def run_efficient_frontier(daily_returns: pd.DataFrame, n_points: int = 100, max
             {"type": "eq", "fun": portfolio_return_equals_target, "args": (avg_returns, target)}
         ]
         result = minimize(
-            get_portfolio_var, x0, args=(cov_matrix, ), method="SLSQP", bounds=bounds, constraints= constraints
+            annual_portfolio_var, x0, args=(cov_matrix, ), method="SLSQP", bounds=bounds, constraints=constraints,
+            options=SLSQP_OPTIONS,
         )
         results.append({ "weights": result.x,
                     "Target Return": target,
-                    "Risk": np.sqrt(max(result.fun, 0.0) * TRADING_DAYS_PER_YEAR),
+                    "Risk": np.sqrt(max(result.fun, 0.0)),
                     "success": bool(result.success)})
 
     return pd.DataFrame(results)
@@ -164,11 +177,12 @@ def get_min_var_portfolio(daily_returns: pd.DataFrame, max_weight: float = 1.0) 
     x0 = np.array([1 / num_assets] * num_assets)
 
     constraints = [{"type": "eq", "fun": weights_sum_to_one}]
-    result = minimize(get_portfolio_var, x0, args=(cov_matrix, ), method="SLSQP", bounds=bounds, constraints=constraints)
+    result = minimize(annual_portfolio_var, x0, args=(cov_matrix, ), method="SLSQP", bounds=bounds,
+                      constraints=constraints, options=SLSQP_OPTIONS)
 
     return {"weights": result.x,
              "Annual Return": np.dot(result.x, avg_returns) * TRADING_DAYS_PER_YEAR,
-             "Annual Risk": np.sqrt(result.fun * TRADING_DAYS_PER_YEAR),
+             "Annual Risk": np.sqrt(max(result.fun, 0.0)),
              "success": bool(result.success)}
 
 
@@ -189,7 +203,7 @@ def get_max_sharpe_portfolio(daily_returns: pd.DataFrame, risk_free_rate: float 
 
     constraints = [{"type": "eq", "fun": weights_sum_to_one}]
     result = minimize(negative_sharpe_ratio, x0, args=(avg_returns, cov_matrix, risk_free_rate), method="SLSQP",
-                 bounds=bounds, constraints=constraints)
+                 bounds=bounds, constraints=constraints, options=SLSQP_OPTIONS)
     ret, risk, sharpe = portfolio_performance(result.x, avg_returns, cov_matrix, risk_free_rate)
     return {"weights": result.x,
              "Annual Return": ret,

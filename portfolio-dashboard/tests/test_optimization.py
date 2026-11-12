@@ -62,3 +62,38 @@ def test_monte_carlo_respects_max_weight():
     weights = np.vstack(mc["weights"].to_numpy())
     assert weights.max() <= 0.4 + 1e-9
     assert np.allclose(weights.sum(axis=1), 1.0)
+
+
+def _realistic_returns(n_assets=8, n=1500, seed=5):
+    """Correlated daily returns with realistic scale (vol 1-3% per day)."""
+    rng = np.random.default_rng(seed)
+    vols = np.linspace(0.01, 0.03, n_assets)
+    corr = 0.3 + 0.7 * np.eye(n_assets)
+    cov = corr * np.outer(vols, vols)
+    means = np.linspace(0.0002, 0.0012, n_assets)
+    data = rng.multivariate_normal(means, cov, size=n)
+    return pd.DataFrame(data, columns=[f"A{i}" for i in range(n_assets)])
+
+
+def test_exact_min_variance_beats_every_random_portfolio():
+    # SLSQP on raw daily variance (~1e-4) stopped at the equal-weight start point
+    returns = _realistic_returns()
+    np.random.seed(0)
+    mc = run_monte_carlo(returns, n_simulations=3000)
+
+    min_var = get_min_var_portfolio(returns)
+
+    assert min_var["Annual Risk"] <= mc["Expected Annual Risk"].min() + 1e-6
+    assert not np.allclose(min_var["weights"], 1 / returns.shape[1])
+
+
+def test_frontier_lies_below_every_random_portfolio():
+    returns = _realistic_returns()
+    np.random.seed(0)
+    mc = run_monte_carlo(returns, n_simulations=3000)
+    frontier = run_efficient_frontier(returns, n_points=60)
+
+    ok = frontier[frontier["success"]].sort_values("Target Return")
+    frontier_risk = np.interp(mc["Annual Expected Return"], ok["Target Return"], ok["Risk"])
+    assert (frontier_risk <= mc["Expected Annual Risk"] + 1e-4).all()
+    _assert_on_frontier(returns)
