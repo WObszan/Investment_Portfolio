@@ -10,7 +10,7 @@ categorized_tickers, ticker_to_name, get_listing_dates, split_investable)
 
 from optimization import (
     run_monte_carlo, run_efficient_frontier,
-    get_min_var_portfolio, get_max_sharpe_portfolio, calculate_portfolio_growth, get_capped_return
+    get_min_var_portfolio, get_max_sharpe_portfolio, calculate_portfolio_growth
 )
 from risk import (
     compute_capm, build_risk_profile, rolling_beta, compute_cumulative_value,
@@ -27,7 +27,7 @@ from ml_model import (train_xgboost, prepare_features, run_backtest, walk_forwar
                       summarize_walk_forward, HORIZON)
 
 
-### Dashoard in Streamlit ###
+### Dashboard in Streamlit ###
 
 st.title("Portfolio Dashboard")
 BENCHMARK = "^GSPC"  # SP500
@@ -162,7 +162,7 @@ if "data" in st.session_state:
     )
  
     tab_eda, tab_opt, tab_proj, tab_risk, tab_cluster, tab_backtest, tab_ml = st.tabs(
-        ["EDA", "Optimalization", "Projection", "Risk", "Clustering", "Backtest", "ML Alpha & Explainability"])
+        ["EDA", "Optimization", "Projection", "Risk", "Clustering", "Backtest", "ML Alpha & Explainability"])
  
     with tab_eda:
         st.subheader("Close Prices")
@@ -180,7 +180,7 @@ if "data" in st.session_state:
  
         st.subheader("Daily Return Correlation")
         fig_corr = plot_correlation_heatmap(daily_returns)
-        st.plotly_chart(fig_corr, use_container_width=True)
+        st.plotly_chart(fig_corr, width="stretch")
 
 
     with tab_opt:
@@ -193,7 +193,7 @@ if "data" in st.session_state:
             min_cap, 1.0, 1.0, step=0.05, key="max_weight",
         )
  
-        if st.button("Start Optimalization"):
+        if st.button("Start Optimization"):
             with st.spinner("Portfolio simulating..."):
                 mc_result = run_monte_carlo(asset_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate,
                                             max_weight=max_weight)
@@ -234,7 +234,7 @@ if "data" in st.session_state:
                 frontier = None
             fig = add_exact_frontier(fig, frontier, exact_max_sharpe, exact_min_var)
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.caption("Stars = best Monte Carlo samples; diamonds = exact scipy portfolios. "
                        "All tables and metrics below use the exact scipy weights.")
  
@@ -308,7 +308,7 @@ if "data" in st.session_state:
         st.write("Check how regular savings can grow your capital based on chosen portfolio strategies.")
 
         if "mc_result" not in st.session_state:
-            st.warning("Please click **Start analysis** at the top and run the simulation in the **Optimalization** tab first!")
+            st.warning("Please click **Start analysis** at the top and run the simulation in the **Optimization** tab first!")
         else:
             exact_max_sharpe = st.session_state["exact_max_sharpe"]
             exact_min_var = st.session_state["exact_min_var"]
@@ -411,7 +411,7 @@ if "data" in st.session_state:
             pred = capm["model"].predict(combined_returns[[BENCHMARK]])
             fig = plot_capm_regression(combined_returns, ticker_to_analyze, BENCHMARK, pred)
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             st.subheader("Rolling Beta")
             window = st.slider("Window size (days)", 20, 120, 60, step=10)
@@ -419,7 +419,7 @@ if "data" in st.session_state:
             beta_series = rolling_beta(combined_returns, ticker_to_analyze, BENCHMARK, window).dropna()
 
             fig_beta = plot_rolling_beta(beta_series, ticker_to_analyze, BENCHMARK)
-            st.plotly_chart(fig_beta, use_container_width=True)
+            st.plotly_chart(fig_beta, width="stretch")
 
  
     with tab_cluster:
@@ -444,7 +444,7 @@ if "data" in st.session_state:
         if "clustered" in st.session_state:
             clustered = st.session_state["clustered"]
             fig = plot_cluster_scatter(clustered)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             st.dataframe(clustered.sort_values("Cluster"))
 
     with tab_backtest:
@@ -458,7 +458,7 @@ if "data" in st.session_state:
         train_fraction = st.slider("Proportion of training data (train)", 0.5, 0.9, 0.75, step=0.05)
  
         if st.button("Run backtest"):
-            with st.spinner("Spliting data and counting portfolios..."):
+            with st.spinner("Splitting data and computing portfolios..."):
                 split_date = get_split_date(asset_returns, train_fraction)
                 train, test = split_train_test(asset_returns, split_date)
  
@@ -509,7 +509,7 @@ if "data" in st.session_state:
                     "Annual Return (arithmetic)": "{:.2%}", "CAGR (geometric)": "{:.2%}",
                     "Annual Risk": "{:.2%}", "Sharpe Ratio": "{:.2f}", "Max Drawdown": "{:.2%}",
                 }),
-                use_container_width=True,
+                width="stretch",
             )
             st.caption(
                 "Annual Return (arithmetic) = mean daily return × 252 (used for Sharpe). "
@@ -525,7 +525,7 @@ if "data" in st.session_state:
             }
  
             fig_bt = plot_backtest_cumulative(curves)
-            st.plotly_chart(fig_bt, use_container_width=True)
+            st.plotly_chart(fig_bt, width="stretch")
 
     with tab_ml:
         st.subheader("Machine Learning & Explainable AI (XGBoost + SHAP)")
@@ -623,7 +623,7 @@ if "data" in st.session_state:
 
             # Generate and display plot using viz.py
             fig_bt = plot_backtest_results(backtest_results)
-            st.plotly_chart(fig_bt, use_container_width=True)
+            st.plotly_chart(fig_bt, width="stretch")
 
             # Final performance metrics
             final_strat = backtest_results['Strategy_Cumulative'].iloc[-1] * 100
@@ -665,5 +665,5 @@ if "data" in st.session_state:
                         "accuracy": "{:.2%}", "baseline_accuracy": "{:.2%}", "majority_accuracy": "{:.2%}",
                         "edge_vs_always_up": "{:+.2%}", "strategy_return": "{:.2%}", "buy_hold_return": "{:.2%}",
                     }),
-                    use_container_width=True,
+                    width="stretch",
                 )

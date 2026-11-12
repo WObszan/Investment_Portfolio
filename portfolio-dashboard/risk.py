@@ -1,7 +1,5 @@
 import numpy as np
 import pandas as pd
-import streamlit as st
-from scipy.optimize import minimize
 from sklearn.linear_model import LinearRegression
 
 from optimization import portfolio_performance
