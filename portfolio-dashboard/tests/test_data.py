@@ -77,3 +77,12 @@ def test_split_train_test_has_no_overlap(train_fraction):
     assert train.index.intersection(test.index).empty
     assert len(train) + len(test) == len(df)
     assert train.index.max() < test.index.min()
+
+
+def test_split_investable_excludes_indices():
+    from data import split_investable
+
+    investable, excluded = split_investable(["AAPL", "^GSPC", "SPY", "^VIX", "MSFT"])
+
+    assert investable == ["AAPL", "SPY", "MSFT"]
+    assert excluded == ["^GSPC", "^VIX"]

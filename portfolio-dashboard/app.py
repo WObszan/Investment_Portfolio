@@ -7,7 +7,7 @@ import shap
 import datetime
 
 from data import (get_clean_data, get_daily_returns, get_risk_free_rate, get_split_date, split_train_test,
-categorized_tickers, ticker_to_name, get_listing_dates)
+categorized_tickers, ticker_to_name, get_listing_dates, split_investable)
 
 from optimization import (
     run_monte_carlo, run_efficient_frontier,
@@ -117,6 +117,11 @@ if st.button("Start analysis"):
 
             if data.empty:
                 st.stop()
+            investable, _ = split_investable(valid_tickers)
+            if len(investable) < 2:
+                st.warning("Select minimum two investable companies to create a portfolio "
+                           "(indices such as ^GSPC are used only as benchmarks).")
+                st.stop()
             close_prices = data["Close"]
             volume_data = data['Volume']
             daily_returns = get_daily_returns(close_prices)
@@ -127,11 +132,15 @@ if st.button("Start analysis"):
             risk_free_rate = get_risk_free_rate(str(daily_returns.index.min().date()),
                                                 str(daily_returns.index.max().date()))
  
+        # Drop results computed for a previous ticker selection
+        for stale_key in ["mc_result", "exact_max_sharpe", "exact_min_var", "opt_max_weight",
+                          "backtest", "ml_results", "capm", "clustered"]:
+            st.session_state.pop(stale_key, None)
         st.session_state["data"] = data
         st.session_state["close_prices"] = close_prices
         st.session_state['volume_data'] = volume_data
         st.session_state["daily_returns"] = daily_returns
-        st.session_state["selected"] = selected
+        st.session_state["selected"] = [t for t in selected if t in valid_tickers]
         st.session_state["today"] = today
         st.session_state['risk_free_rate'] = risk_free_rate
  
@@ -143,6 +152,14 @@ if "data" in st.session_state:
     selected = st.session_state["selected"]
     today = st.session_state["today"]
     risk_free_rate = st.session_state['risk_free_rate']
+
+    # Indices (e.g. ^GSPC) are not investable: keep them out of optimization and backtest
+    investable_tickers, excluded_indices = split_investable(list(daily_returns.columns))
+    asset_returns = daily_returns[investable_tickers]
+    excluded_msg = (
+        f"Indices ({', '.join(excluded_indices)}) are not investable and have been excluded "
+        f"from the portfolio; they are used only as benchmarks." if excluded_indices else None
+    )
  
     tab_eda, tab_opt, tab_proj, tab_risk, tab_cluster, tab_backtest, tab_ml = st.tabs(
         ["EDA", "Optimalization", "Projection", "Risk", "Clustering", "Backtest", "ML Alpha & Explainability"])
@@ -167,8 +184,10 @@ if "data" in st.session_state:
 
 
     with tab_opt:
+        if excluded_msg:
+            st.info(excluded_msg)
         n_sim = st.slider("Select number of Monte Carlo simulations", 1000, 20000, 10000, step=1000)
-        min_cap = float(np.ceil(100 / daily_returns.shape[1] / 5) * 5 / 100)
+        min_cap = float(np.ceil(100 / asset_returns.shape[1] / 5) * 5 / 100)
         max_weight = st.slider(
             "Max weight per asset (applies to Monte Carlo, frontier, exact portfolios and backtest)",
             min_cap, 1.0, 1.0, step=0.05, key="max_weight",
@@ -176,11 +195,11 @@ if "data" in st.session_state:
  
         if st.button("Start Optimalization"):
             with st.spinner("Portfolio simulating..."):
-                mc_result = run_monte_carlo(daily_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate,
+                mc_result = run_monte_carlo(asset_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate,
                                             max_weight=max_weight)
-                exact_max_sharpe = get_max_sharpe_portfolio(daily_returns, risk_free_rate=risk_free_rate,
+                exact_max_sharpe = get_max_sharpe_portfolio(asset_returns, risk_free_rate=risk_free_rate,
                                                             max_weight=max_weight)
-                exact_min_var = get_min_var_portfolio(daily_returns, max_weight=max_weight)
+                exact_min_var = get_min_var_portfolio(asset_returns, max_weight=max_weight)
             st.session_state["mc_result"] = mc_result
             st.session_state["exact_max_sharpe"] = exact_max_sharpe
             st.session_state["exact_min_var"] = exact_min_var
@@ -191,7 +210,7 @@ if "data" in st.session_state:
             exact_max_sharpe = st.session_state["exact_max_sharpe"]
             exact_min_var = st.session_state["exact_min_var"]
             opt_max_weight = st.session_state["opt_max_weight"]
-            asset_names = list(daily_returns.columns)
+            asset_names = list(asset_returns.columns)
             max_sharpe_idx = mc_result["Expected Sharpe Ratio"].idxmax()
             min_risk_idx = mc_result["Expected Annual Risk"].idxmin()
 
@@ -206,7 +225,7 @@ if "data" in st.session_state:
             show_exact_frontier = st.checkbox("Show the exact efficient frontier")
             if show_exact_frontier:
                 with st.spinner("Calculating the exact efficient frontier..."):
-                    frontier = run_efficient_frontier(daily_returns, max_weight=opt_max_weight)
+                    frontier = run_efficient_frontier(asset_returns, max_weight=opt_max_weight)
 
                 n_failed = int((~frontier["success"]).sum())
                 if n_failed:
@@ -238,8 +257,8 @@ if "data" in st.session_state:
 
             st.subheader("Value at Risk ( VAR ) and CVAR — in-sample")
             confidence = st.select_slider("Confidence level", options=[0.90,0.92,0.94, 0.95, 0.97, 0.99], value=0.95)
-            risk_max = portfolio_risk_summary(daily_returns, exact_max_sharpe["weights"], risk_free_rate, confidence)
-            risk_min = portfolio_risk_summary(daily_returns, exact_min_var["weights"], risk_free_rate, confidence)
+            risk_max = portfolio_risk_summary(asset_returns, exact_max_sharpe["weights"], risk_free_rate, confidence)
+            risk_min = portfolio_risk_summary(asset_returns, exact_min_var["weights"], risk_free_rate, confidence)
 
             col1, col2 = st.columns(2)
             with col1:
@@ -429,6 +448,8 @@ if "data" in st.session_state:
             st.dataframe(clustered.sort_values("Cluster"))
 
     with tab_backtest:
+        if excluded_msg:
+            st.info(excluded_msg)
         st.write(
             "We examine how the weights determined during the training period (train)" 
             " would perform on data the model has never seen (test)."
@@ -438,10 +459,10 @@ if "data" in st.session_state:
  
         if st.button("Run backtest"):
             with st.spinner("Spliting data and counting portfolios..."):
-                split_date = get_split_date(daily_returns, train_fraction)
-                train, test = split_train_test(daily_returns, split_date)
+                split_date = get_split_date(asset_returns, train_fraction)
+                train, test = split_train_test(asset_returns, split_date)
  
-                num_assets = daily_returns.shape[1]
+                num_assets = asset_returns.shape[1]
                 equal_weights = np.array([1 / num_assets] * num_assets)
  
                 rf_train = get_risk_free_rate(str(train.index.min().date()), str(train.index.max().date()))

@@ -250,6 +250,13 @@ def get_listing_dates(close_prices: pd.DataFrame) -> pd.Series:
     return close_prices.apply(lambda col: col.first_valid_index()).sort_values(ascending=False)
 
 
+def split_investable(tickers: list[str]) -> tuple[list[str], list[str]]:
+    """Split tickers into investable assets and non-investable indices (symbols starting with '^')."""
+    investable = [t for t in tickers if not t.startswith("^")]
+    excluded = [t for t in tickers if t.startswith("^")]
+    return investable, excluded
+
+
 def get_risk_free_rate(start: str, end: str, fallback: float = 0.0) -> float:
     """Average annualized 13-week T-bill yield (^IRX) over [start, end], as a decimal.
 
