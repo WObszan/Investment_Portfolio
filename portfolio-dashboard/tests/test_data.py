@@ -36,3 +36,32 @@ def test_daily_returns_use_common_period_only():
 
     assert not returns.isna().any().any()
     assert returns.index.min() > prices["B"].first_valid_index()
+
+
+def _fake_irx(values):
+    dates = pd.date_range("2020-01-01", periods=len(values), freq="B")
+    columns = pd.MultiIndex.from_product([["Close", "Volume"], ["^IRX"]], names=["Price", "Ticker"])
+    frame = pd.DataFrame(np.column_stack([values, np.zeros(len(values))]), index=dates, columns=columns)
+    return frame, ["^IRX"]
+
+
+def test_risk_free_rate_is_window_average_not_last_value(monkeypatch):
+    import data
+
+    # ^IRX quoted in percent: rises from 1% to 5% over the window
+    monkeypatch.setattr(data, "get_clean_data", lambda *args, **kwargs: _fake_irx(np.linspace(1.0, 5.0, 101)))
+
+    assert data.get_risk_free_rate("2020-01-01", "2020-06-01") == pytest.approx(0.03)
+
+
+def test_risk_free_rate_falls_back_when_download_fails(monkeypatch):
+    import data
+
+    monkeypatch.setattr(data, "get_clean_data", lambda *args, **kwargs: (pd.DataFrame(), []))
+    assert data.get_risk_free_rate("2020-01-01", "2020-06-01") == 0.0
+
+    def boom(*args, **kwargs):
+        raise ConnectionError("no network")
+
+    monkeypatch.setattr(data, "get_clean_data", boom)
+    assert data.get_risk_free_rate("2020-01-01", "2020-06-01", fallback=0.01) == 0.01

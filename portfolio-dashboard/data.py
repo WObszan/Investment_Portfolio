@@ -250,10 +250,28 @@ def get_listing_dates(close_prices: pd.DataFrame) -> pd.Series:
     return close_prices.apply(lambda col: col.first_valid_index()).sort_values(ascending=False)
 
 
-def get_risk_free_rate(start: str, end: str) -> float:
-    data, _ = get_clean_data(['^IRX'], start, end)
-    close_data =  data['Close'].squeeze()
-    return float(close_data.iloc[-1] / 100)
+def get_risk_free_rate(start: str, end: str, fallback: float = 0.0) -> float:
+    """Average annualized 13-week T-bill yield (^IRX) over [start, end], as a decimal.
+
+    Using the window average (instead of the latest quote) avoids look-ahead when the
+    rate is applied to a historical period. `end` is inclusive. If the download fails or
+    returns no data, `fallback` is returned and a Streamlit warning is shown.
+    """
+    end_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        data, _ = get_clean_data(["^IRX"], start, end_exclusive)
+        close = data["Close"].squeeze().dropna() if not data.empty else pd.Series(dtype=float)
+    except Exception:
+        close = pd.Series(dtype=float)
+
+    if close.empty:
+        st.warning(
+            f"Could not download the risk-free rate (^IRX) for {start} – {end}; "
+            f"using {fallback:.2%} instead."
+        )
+        return float(fallback)
+    return float(close.mean() / 100)
+
 
 def get_split_date(daily_returns: pd.DataFrame, train_fraction: float = 0.75) -> str:
     daily_returns_len = len(daily_returns)

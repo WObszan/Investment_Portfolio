@@ -125,7 +125,8 @@ if st.button("Start analysis"):
                 st.error("The selected tickers have no common trading period with data. "
                          "Remove the most recently listed ticker and try again.")
                 st.stop()
-            risk_free_rate = get_risk_free_rate('2015-01-01', today)
+            risk_free_rate = get_risk_free_rate(str(daily_returns.index.min().date()),
+                                                str(daily_returns.index.max().date()))
  
         st.session_state["data"] = data
         st.session_state["close_prices"] = close_prices
@@ -439,20 +440,23 @@ if "data" in st.session_state:
                 num_assets = len(selected)
                 equal_weights = np.array([1 / num_assets] * num_assets)
  
-                frozen_portfolio = get_max_sharpe_portfolio(train, risk_free_rate=risk_free_rate,
+                rf_train = get_risk_free_rate(str(train.index.min().date()), str(train.index.max().date()))
+                rf_test = get_risk_free_rate(str(test.index.min().date()), str(test.index.max().date()))
+
+                frozen_portfolio = get_max_sharpe_portfolio(train, risk_free_rate=rf_train,
                                                             max_weight=st.session_state.get("max_weight", 1.0))
                 frozen_weights = frozen_portfolio["weights"]
  
                 avg_returns_test = test.mean()
                 cov_matrix_test = test.cov()
  
-                frozen_perf = portfolio_performance(frozen_weights, avg_returns_test, cov_matrix_test, risk_free_rate)
-                equal_perf = portfolio_performance(equal_weights, avg_returns_test, cov_matrix_test, risk_free_rate)
+                frozen_perf = portfolio_performance(frozen_weights, avg_returns_test, cov_matrix_test, rf_test)
+                equal_perf = portfolio_performance(equal_weights, avg_returns_test, cov_matrix_test, rf_test)
  
                 bench_data, _ = get_clean_data([BENCHMARK], str(test.index.min().date()), str(test.index.max().date()))
                 bench_returns = get_daily_returns(bench_data["Close"])
                 bench_perf = portfolio_performance(
-                    np.array([1.0]), bench_returns.mean(), bench_returns.cov(), risk_free_rate
+                    np.array([1.0]), bench_returns.mean(), bench_returns.cov(), rf_test
                 )
  
                 st.session_state["backtest"] = {
@@ -460,6 +464,7 @@ if "data" in st.session_state:
                     "frozen_weights": frozen_weights, "equal_weights": equal_weights,
                     "frozen_perf": frozen_perf, "equal_perf": equal_perf, "bench_perf": bench_perf,
                     "bench_returns": bench_returns,
+                    "rf_train": rf_train, "rf_test": rf_test,
                 }
  
         if "backtest" in st.session_state:
@@ -469,6 +474,8 @@ if "data" in st.session_state:
                       f"({len(bt['train'])} days)")
             st.write(f"Testing period: {bt['test'].index.min().date()} — {bt['test'].index.max().date()} "
                       f"({len(bt['test'])} days)")
+            st.caption(f"Risk-free rate (average ^IRX): train {bt['rf_train']:.2%}, test {bt['rf_test']:.2%}. "
+                       "The train rate is used to pick the weights, the test rate for the Sharpe ratios below.")
  
             comparison = pd.DataFrame({
                 "Strategy": ["Max Sharpe (frozen weights)", "Equal Weight", f"Benchmark ({BENCHMARK})"],
