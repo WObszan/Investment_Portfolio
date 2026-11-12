@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import shap
 import datetime
 
-from data import (get_clean_data, get_daily_returns, get_risk_free_rate, get_split_date, split_train_test, 
-categorized_tickers, ticker_to_name )
+from data import (get_clean_data, get_daily_returns, get_risk_free_rate, get_split_date, split_train_test,
+categorized_tickers, ticker_to_name, get_listing_dates)
 
 from optimization import (
     portfolio_performance, run_monte_carlo, run_efficient_frontier,
@@ -121,6 +121,10 @@ if st.button("Start analysis"):
             close_prices = data["Close"]
             volume_data = data['Volume']
             daily_returns = get_daily_returns(close_prices)
+            if len(daily_returns) < 2:
+                st.error("The selected tickers have no common trading period with data. "
+                         "Remove the most recently listed ticker and try again.")
+                st.stop()
             risk_free_rate = get_risk_free_rate('2015-01-01', today)
  
         st.session_state["data"] = data
@@ -147,11 +151,15 @@ if "data" in st.session_state:
         st.subheader("Close Prices")
         st.dataframe(data)
         st.line_chart(close_prices)
-        st.caption(
-            "💡 *Historical methodology: Periods prior to a given company's stock market debut "
-            "are treated as a period with a zero rate of return (cash).* "
-        )
-        st.write("Open market days: ", len(daily_returns))
+        listing_dates = get_listing_dates(close_prices)
+        if listing_dates.iloc[0] > close_prices.index.min():
+            st.warning(
+                f"Returns, correlations, optimization and backtest use only the common period where all "
+                f"selected tickers have data: from **{daily_returns.index.min().date()}**. "
+                f"The latest-listed ticker is **{listing_dates.index[0]}** "
+                f"(first price on {listing_dates.iloc[0].date()})."
+            )
+        st.write("Open market days (common period): ", len(daily_returns))
  
         st.subheader("Daily Return Correlation")
         fig_corr = plot_correlation_heatmap(daily_returns)

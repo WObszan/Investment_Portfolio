@@ -152,3 +152,8 @@ portfolio-dashboard/
 - The ML model predicts direction only, over a fixed 5-day horizon — not calibrated
   position sizing or risk-adjusted signal strength.
 - Currency risk is not modeled for non-USD assets.
+- **Data window:** daily returns use only the common period in which every selected ticker
+  has prices (rows before the latest listing date are dropped, not filled with 0%). Adding a
+  recently listed stock therefore shortens the history used for covariance, optimization and
+  the backtest; the EDA tab shows the effective start date. Isolated gaps after listing are
+  forward-filled on prices.

@@ -235,11 +235,19 @@ def get_clean_data(tickers: list[str], start: str, end: str):
 
 @st.cache_data(show_spinner=False)
 def get_daily_returns(close_prices: pd.DataFrame) -> pd.DataFrame:
-    """Compute daily percentage returns from close prices."""
-    returns = close_prices.pct_change()
-    returns = returns.dropna(how="all")
-    returns = returns.fillna(0)
-    return returns
+    """Daily percentage returns over the common period where every ticker has data.
+
+    Rows before the latest listing date are dropped instead of being filled with 0%,
+    which would understate volatility and correlation. Isolated gaps after listing are
+    already forward-filled on prices in `get_clean_data`.
+    """
+    returns = close_prices.pct_change(fill_method=None)
+    return returns.dropna(how="any")
+
+
+def get_listing_dates(close_prices: pd.DataFrame) -> pd.Series:
+    """First date with a valid close price for every ticker, latest first."""
+    return close_prices.apply(lambda col: col.first_valid_index()).sort_values(ascending=False)
 
 
 def get_risk_free_rate(start: str, end: str) -> float:
