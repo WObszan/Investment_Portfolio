@@ -282,6 +282,8 @@ def get_split_date(daily_returns: pd.DataFrame, train_fraction: float = 0.75) ->
                                   
                                
 def split_train_test(daily_returns: pd.DataFrame, split_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_daily_returns = daily_returns.loc[:split_date]
-    test_daily_returns = daily_returns.loc[split_date:]
+    """Chronological split: train includes `split_date`, test starts strictly after it."""
+    split_ts = pd.Timestamp(split_date)
+    train_daily_returns = daily_returns.loc[daily_returns.index <= split_ts]
+    test_daily_returns = daily_returns.loc[daily_returns.index > split_ts]
     return train_daily_returns, test_daily_returns

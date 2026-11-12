@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data import get_daily_returns
+from data import get_daily_returns, get_split_date, split_train_test
 
 
 def _correlated_prices_one_listed_halfway(n=4000, true_corr=0.40, daily_vol=0.02, seed=7):
@@ -65,3 +65,15 @@ def test_risk_free_rate_falls_back_when_download_fails(monkeypatch):
 
     monkeypatch.setattr(data, "get_clean_data", boom)
     assert data.get_risk_free_rate("2020-01-01", "2020-06-01", fallback=0.01) == 0.01
+
+
+@pytest.mark.parametrize("train_fraction", [0.5, 0.75, 0.9])
+def test_split_train_test_has_no_overlap(train_fraction):
+    df = pd.DataFrame({"A": np.arange(100.0)}, index=pd.date_range("2021-01-01", periods=100, freq="B"))
+
+    split_date = get_split_date(df, train_fraction)
+    train, test = split_train_test(df, split_date)
+
+    assert train.index.intersection(test.index).empty
+    assert len(train) + len(test) == len(df)
+    assert train.index.max() < test.index.min()
