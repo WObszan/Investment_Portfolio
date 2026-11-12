@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
 import shap
 import datetime
@@ -24,7 +23,8 @@ from viz import (
     plot_portfolio_growth, plot_backtest_results
 )
 from callbacks import (sync_from_multiselect, sync_from_pills)
-from ml_model import (train_xgboost, prepare_futures, run_backtest)
+from ml_model import (train_xgboost, prepare_features, run_backtest, walk_forward_evaluation,
+                      summarize_walk_forward, HORIZON)
 
 
 ### Dashoard in Streamlit ###
@@ -534,39 +534,53 @@ if "data" in st.session_state:
         ml_tickers = [t for t in selected if t != BENCHMARK]
         ticker_for_ml = st.selectbox("Select asset for ML prediction", ml_tickers, key="ml_ticker")
 
+        cost_bps = st.number_input("Transaction cost (bps per position change)", min_value=0.0, max_value=100.0,
+                                   value=5.0, step=1.0, key="ml_cost_bps")
+
         if st.button('Train XGBoost model'):
-            processed_data = pd.DataFrame()
             with st.spinner('Engineering features and training model...'):
                 bench_data, _ = get_clean_data([BENCHMARK], "2015-01-01", today)
                 bench_close = bench_data["Close"][BENCHMARK]
                 bench_volume = bench_data['Volume'][BENCHMARK]
 
                 single_asset_df = pd.DataFrame({"Close": close_prices[ticker_for_ml],
-                                                "Volume": volume_data[ticker_for_ml]})
+                                                "Volume": volume_data[ticker_for_ml]}).dropna(subset=["Close"])
                 benchmark_asset_df = pd.DataFrame({"Close": bench_close,
                                                    'Volume': bench_volume})
 
-                processed_data = prepare_futures(single_asset_df, benchmark_asset_df)
-                if len(processed_data) < 100:
+                processed_data = prepare_features(single_asset_df, benchmark_asset_df)
+                if len(processed_data) < 300:
                     st.error("Not enough data to train the model after dropping NaN values.")
                 else:
-                    model, X_test, y_test, shap_values = train_xgboost(processed_data)
+                    res = train_xgboost(processed_data)
+                    res["ticker"] = ticker_for_ml
+                    res["processed_data"] = processed_data
+                    st.session_state["ml_results"] = res
+                    st.session_state.pop("ml_walk_forward", None)
 
-                    st.session_state["ml_results"] = {
-                        "model": model, "X_test": X_test, "y_test": y_test, 
-                        "shap_values": shap_values, "ticker": ticker_for_ml
-                    }
         if "ml_results" in st.session_state and st.session_state["ml_results"]["ticker"] == ticker_for_ml:
             res = st.session_state["ml_results"]
             model = res["model"]
             X_test = res["X_test"]
             y_test = res["y_test"]
             shap_values = res["shap_values"]
+            processed_data = res["processed_data"]
+            acc = res["accuracy"]
+            baselines = res["baselines"]
 
-            preds = model.predict(X_test)
-            acc = accuracy_score(y_test, preds)
-
-            st.metric("Model Test Accuracy", f"{acc:.2%}")
+            st.markdown("**Test-set accuracy vs naive baselines**")
+            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+            col_a1.metric("Model Test Accuracy", f"{acc:.2%}")
+            col_a2.metric("'Always up' baseline", f"{baselines['always_up']:.2%}")
+            majority_label = "up" if baselines["majority_class"] == 1 else "down"
+            col_a3.metric(f"Majority class ({majority_label}) baseline", f"{baselines['majority']:.2%}")
+            col_a4.metric("Model − 'always up'", f"{(acc - baselines['always_up']) * 100:+.2f} pp")
+            st.caption(
+                "'Always up' = share of up labels in the test set (what you get by always predicting a rise). "
+                "Majority class = most frequent label in the training data, scored on the test set. "
+                "A model only shows skill if it beats these baselines, not 50%. "
+                f"Train/validation/test are chronological with a {HORIZON}-row purge gap so labels do not overlap."
+            )
 
             latest_features = X_test.iloc[[-1]]
             latest_prob = model.predict_proba(latest_features)[0]  # [probability of drop, probability of rise]
@@ -587,7 +601,7 @@ if "data" in st.session_state:
                 st.success(f"The model suggests that **{ticker_for_ml}**"
                            f" will close **higher** over the next 5 trading days (probability: {confidence:.1f}%).")
             else:
-                st.warning(f"The model suggests caution – **{ticker_for_ml}**"
+                st.warning(f"The model suggests caution – **{ticker_for_ml}** "
                            f"may trend **lower** over the next 5 trading days (probability: {confidence:.1f}%).")
 
             st.subheader("Feature Importance (SHAP Summary)")
@@ -601,10 +615,11 @@ if "data" in st.session_state:
             #BACKTESTING EXECUTION & VISUALIZATION
             st.markdown("---")
             st.subheader("Strategy Backtest (Out-of-Sample)")
-            st.write("Performance evaluation of the ML-driven classification strategy compared to standard Buy & Hold.")
+            st.write("Performance evaluation of the ML-driven classification strategy compared to standard Buy & Hold "
+                     f"(long/flat, {HORIZON}-day steps, {cost_bps:g} bps per position change).")
 
             # Run backtest calculation
-            backtest_results = run_backtest(model, X_test, y_test, processed_data)
+            backtest_results = run_backtest(model, X_test, y_test, processed_data, cost_bps=cost_bps)
 
             # Generate and display plot using viz.py
             fig_bt = plot_backtest_results(backtest_results)
@@ -620,4 +635,35 @@ if "data" in st.session_state:
             with col_b2:
                 st.metric("Buy & Hold Total Return", f"{final_market:.2f}%")
 
-    
+            st.markdown("---")
+            st.subheader("Walk-Forward Evaluation (5 folds, expanding window)")
+            st.write("A single test split can be lucky. Walk-forward retrains on all data before each of 5 "
+                     "consecutive test blocks (fixed XGBoost parameters, purged gap) and reports the spread.")
+            if st.button("Run walk-forward evaluation"):
+                with st.spinner("Training 5 walk-forward folds..."):
+                    folds = walk_forward_evaluation(processed_data, n_folds=5, cost_bps=cost_bps)
+                st.session_state["ml_walk_forward"] = {"ticker": ticker_for_ml, "folds": folds,
+                                                       "summary": summarize_walk_forward(folds)}
+
+            wf = st.session_state.get("ml_walk_forward")
+            if wf and wf["ticker"] == ticker_for_ml:
+                summary = wf["summary"]
+                col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+                for col, key, label, scale, unit in [
+                    (col_w1, "accuracy", "Accuracy", 100, "%"),
+                    (col_w2, "baseline_accuracy", "'Always up' baseline", 100, "%"),
+                    (col_w3, "edge_vs_always_up", "Model − 'always up'", 100, " pp"),
+                    (col_w4, "strategy_return", "Strategy return / fold", 100, "%"),
+                ]:
+                    col.metric(label, f"{summary.loc[key, 'mean'] * scale:.2f}{unit}",
+                               help=f"mean ± std across folds: ± {summary.loc[key, 'std'] * scale:.2f}{unit}")
+                    col.caption(f"± {summary.loc[key, 'std'] * scale:.2f}{unit} (std)")
+                st.caption(f"Buy & hold return per fold: {summary.loc['buy_hold_return', 'mean']:.2%} "
+                           f"± {summary.loc['buy_hold_return', 'std']:.2%}.")
+                st.dataframe(
+                    wf["folds"].style.format({
+                        "accuracy": "{:.2%}", "baseline_accuracy": "{:.2%}", "majority_accuracy": "{:.2%}",
+                        "edge_vs_always_up": "{:+.2%}", "strategy_return": "{:.2%}", "buy_hold_return": "{:.2%}",
+                    }),
+                    use_container_width=True,
+                )
