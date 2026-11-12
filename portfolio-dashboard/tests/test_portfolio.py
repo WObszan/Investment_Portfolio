@@ -83,3 +83,63 @@ def test_historical_var_cvar_cvar_is_at_least_as_extreme_as_var():
     assert var >= 0
     assert cvar >= 0
     assert cvar >= var
+
+def test_portfolio_cagr_constant_daily_return():
+    from risk import portfolio_cagr
+
+    daily_returns = pd.DataFrame({"A": [0.001] * 252})
+    assert portfolio_cagr(daily_returns, np.array([1.0])) == pytest.approx(1.001**252 - 1)
+
+
+def test_calmar_uses_cagr_not_arithmetic_mean():
+    # Alternating +10% / -10%: arithmetic mean is 0 but the portfolio loses money (volatility drag)
+    from risk import portfolio_calmar_ratio, portfolio_cagr
+
+    daily_returns = pd.DataFrame({"A": [0.10, -0.10] * 126})
+    weights = np.array([1.0])
+
+    cagr = portfolio_cagr(daily_returns, weights)
+    mdd = portfolio_max_drawdown(daily_returns, weights)
+
+    assert cagr < 0
+    assert portfolio_calmar_ratio(daily_returns, weights) == pytest.approx(cagr / abs(mdd))
+
+
+def test_buy_and_hold_value_lets_weights_drift():
+    # A: +100% then -50%, B: flat. Buy & hold ends at 1.0, daily rebalancing at 1.5 * 0.75 = 1.125
+    from risk import compute_buy_and_hold_value
+
+    daily_returns = pd.DataFrame({"A": [1.0, -0.5], "B": [0.0, 0.0]})
+    weights = np.array([0.5, 0.5])
+
+    assert list(compute_buy_and_hold_value(daily_returns, weights)) == pytest.approx([1.5, 1.0])
+    assert list(compute_cumulative_value(daily_returns, weights)) == pytest.approx([1.5, 1.125])
+
+
+def test_risk_summary_matches_individual_metrics():
+    from risk import portfolio_risk_summary, portfolio_sortino_ratio
+
+    rng = np.random.default_rng(0)
+    daily_returns = pd.DataFrame(rng.normal(0.0005, 0.01, (500, 2)), columns=["A", "B"])
+    weights = np.array([0.3, 0.7])
+
+    summary = portfolio_risk_summary(daily_returns, weights, risk_free_rate=0.02, confidence=0.95)
+    var, cvar = historical_var_cvar(daily_returns, weights, 0.95)
+
+    assert summary["VaR"] == pytest.approx(var)
+    assert summary["CVaR"] == pytest.approx(cvar)
+    assert summary["Max Drawdown"] == pytest.approx(portfolio_max_drawdown(daily_returns, weights))
+    assert summary["Sortino Ratio"] == pytest.approx(portfolio_sortino_ratio(daily_returns, weights, 0.02))
+
+
+def test_strategy_metrics_reports_arithmetic_and_geometric_return():
+    from risk import portfolio_cagr, strategy_metrics
+
+    daily_returns = pd.DataFrame({"A": [0.10, -0.10] * 126})
+    weights = np.array([1.0])
+
+    metrics = strategy_metrics(daily_returns, weights, risk_free_rate=0.0)
+
+    assert metrics["Annual Return (arithmetic)"] == pytest.approx(0.0)
+    assert metrics["CAGR (geometric)"] == pytest.approx(portfolio_cagr(daily_returns, weights))
+    assert metrics["Max Drawdown"] == pytest.approx(portfolio_max_drawdown(daily_returns, weights))

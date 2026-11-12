@@ -10,13 +10,12 @@ from data import (get_clean_data, get_daily_returns, get_risk_free_rate, get_spl
 categorized_tickers, ticker_to_name, get_listing_dates)
 
 from optimization import (
-    portfolio_performance, run_monte_carlo, run_efficient_frontier,
+    run_monte_carlo, run_efficient_frontier,
     get_min_var_portfolio, get_max_sharpe_portfolio, calculate_portfolio_growth, get_capped_return
 )
 from risk import (
-    historical_var_cvar, portfolio_sortino_ratio, portfolio_max_drawdown,
-    portfolio_calmar_ratio, compute_capm, build_risk_profile, rolling_beta,
-    compute_cumulative_value
+    compute_capm, build_risk_profile, rolling_beta, compute_cumulative_value,
+    compute_buy_and_hold_value, portfolio_risk_summary, strategy_metrics,
 )
 from clustering import cluster_assets
 from viz import (
@@ -179,99 +178,110 @@ if "data" in st.session_state:
             with st.spinner("Portfolio simulating..."):
                 mc_result = run_monte_carlo(daily_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate,
                                             max_weight=max_weight)
+                exact_max_sharpe = get_max_sharpe_portfolio(daily_returns, risk_free_rate=risk_free_rate,
+                                                            max_weight=max_weight)
+                exact_min_var = get_min_var_portfolio(daily_returns, max_weight=max_weight)
             st.session_state["mc_result"] = mc_result
+            st.session_state["exact_max_sharpe"] = exact_max_sharpe
+            st.session_state["exact_min_var"] = exact_min_var
+            st.session_state["opt_max_weight"] = max_weight
  
         if "mc_result" in st.session_state:
             mc_result = st.session_state["mc_result"]
+            exact_max_sharpe = st.session_state["exact_max_sharpe"]
+            exact_min_var = st.session_state["exact_min_var"]
+            opt_max_weight = st.session_state["opt_max_weight"]
+            asset_names = list(daily_returns.columns)
             max_sharpe_idx = mc_result["Expected Sharpe Ratio"].idxmax()
             min_risk_idx = mc_result["Expected Annual Risk"].idxmin()
+
+            if opt_max_weight != max_weight:
+                st.info(f"Results below use max weight {opt_max_weight:.0%}. "
+                        "Click **Start Optimization** again to apply the new limit.")
+            if not (exact_min_var["success"] and exact_max_sharpe["success"]):
+                st.warning("The exact optimizer did not fully converge; treat the scipy portfolios with caution.")
  
             fig = plot_efficient_frontier(mc_result, max_sharpe_idx, min_risk_idx)
 
             show_exact_frontier = st.checkbox("Show the exact efficient frontier")
             if show_exact_frontier:
                 with st.spinner("Calculating the exact efficient frontier..."):
-                    frontier = run_efficient_frontier(daily_returns, max_weight=max_weight)
-                    exact_min_var = get_min_var_portfolio(daily_returns, max_weight=max_weight)
-                    exact_max_sharpe = get_max_sharpe_portfolio(daily_returns, risk_free_rate=risk_free_rate,
-                                                                max_weight=max_weight)
+                    frontier = run_efficient_frontier(daily_returns, max_weight=opt_max_weight)
 
                 n_failed = int((~frontier["success"]).sum())
                 if n_failed:
                     st.warning(f"{n_failed} of {len(frontier)} frontier points did not converge and are not plotted.")
-                if not (exact_min_var["success"] and exact_max_sharpe["success"]):
-                    st.warning("The exact optimizer did not fully converge; treat the scipy portfolios with caution.")
-                fig = add_exact_frontier(fig, frontier, exact_max_sharpe, exact_min_var)
+            else:
+                frontier = None
+            fig = add_exact_frontier(fig, frontier, exact_max_sharpe, exact_min_var)
 
             st.plotly_chart(fig, use_container_width=True)
+            st.caption("Stars = best Monte Carlo samples; diamonds = exact scipy portfolios. "
+                       "All tables and metrics below use the exact scipy weights.")
  
             col1, col2 = st.columns(2)
             with col1:
-                st.write("---- Portfolio Max Sharpe ----")
-                st.metric("Sharpe Ratio", f"{mc_result.loc[max_sharpe_idx, 'Expected Sharpe Ratio']:.2f}")
+                st.write("---- Portfolio Max Sharpe (exact) ----")
+                st.metric("Sharpe Ratio (in-sample)", f"{exact_max_sharpe['Sharpe Ratio']:.2f}")
                 st.dataframe(pd.DataFrame({
-                    "Ticker": selected,
-                    "Weight": mc_result.loc[max_sharpe_idx, "weights"],
+                    "Ticker": asset_names,
+                    "Weight": exact_max_sharpe["weights"],
                 }).set_index("Ticker"))
  
             with col2:
-                st.write("---- Portfolio Min Risk ----")
-                st.metric("Annual Risk", f"{mc_result.loc[min_risk_idx, 'Expected Annual Risk']:.2%}")
+                st.write("---- Portfolio Min Risk (exact) ----")
+                st.metric("Annual Risk (in-sample)", f"{exact_min_var['Annual Risk']:.2%}")
                 st.dataframe(pd.DataFrame({
-                    "Ticker": selected,
-                    "Weight": mc_result.loc[min_risk_idx, "weights"],
+                    "Ticker": asset_names,
+                    "Weight": exact_min_var["weights"],
                 }).set_index("Ticker"))
 
-            st.subheader("Value at Risk ( VAR ) and CVAR")
+            st.subheader("Value at Risk ( VAR ) and CVAR — in-sample")
             confidence = st.select_slider("Confidence level", options=[0.90,0.92,0.94, 0.95, 0.97, 0.99], value=0.95)
-            var_max, cvar_max = historical_var_cvar(daily_returns, mc_result.loc[max_sharpe_idx, "weights"], confidence)
-            var_min, cvar_min = historical_var_cvar(daily_returns, mc_result.loc[min_risk_idx, 'weights'], confidence)
+            risk_max = portfolio_risk_summary(daily_returns, exact_max_sharpe["weights"], risk_free_rate, confidence)
+            risk_min = portfolio_risk_summary(daily_returns, exact_min_var["weights"], risk_free_rate, confidence)
 
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"--- Max Sharpe - daily VaR/CVaR: {confidence:.0%} ---")
-                st.metric(f"VaR {confidence:.0%}", f'{var_max:.2%}')
-                st.metric(f"CVar {confidence:.0%}", f"{cvar_max:.2%}")
+                st.metric(f"VaR {confidence:.0%}", f"{risk_max['VaR']:.2%}")
+                st.metric(f"CVaR {confidence:.0%}", f"{risk_max['CVaR']:.2%}")
  
             with col2:
                 st.write(f"--- Min Risk - daily VaR/CVaR: {confidence:.0%} ---")
-                st.metric(f"VaR {confidence:.0%}", f'{var_min:.2%}')
-                st.metric(f"CVar {confidence:.0%}", f"{cvar_min:.2%}")
+                st.metric(f"VaR {confidence:.0%}", f"{risk_min['VaR']:.2%}")
+                st.metric(f"CVaR {confidence:.0%}", f"{risk_min['CVaR']:.2%}")
             
             st.caption(
                 "VaR = maximum expected loss on a typical day at a selected confidence level,  \n"
-                "(e.g., VaR 95% means that only 5% of historical days were worse then this value).  \n"
-                "CVar (Expected Shortfall) = mean loss on those worst days - it shows  \n"
-                "how big losses could be if Var is breached."
+                "(e.g., VaR 95% means that only 5% of historical days were worse than this value).  \n"
+                "CVaR (Expected Shortfall) = mean loss on those worst days - it shows  \n"
+                "how big losses could be if VaR is breached."
                  )
 
-            st.subheader("Additional Risk Metrics")
- 
-            sortino_max = portfolio_sortino_ratio(daily_returns, mc_result.loc[max_sharpe_idx, "weights"], risk_free_rate=risk_free_rate)
-            sortino_min = portfolio_sortino_ratio(daily_returns, mc_result.loc[min_risk_idx, "weights"], risk_free_rate=risk_free_rate)
- 
-            mdd_max = portfolio_max_drawdown(daily_returns, mc_result.loc[max_sharpe_idx, "weights"])
-            mdd_min = portfolio_max_drawdown(daily_returns, mc_result.loc[min_risk_idx, "weights"])
- 
-            calmar_max = portfolio_calmar_ratio(daily_returns, mc_result.loc[max_sharpe_idx, "weights"])
-            calmar_min = portfolio_calmar_ratio(daily_returns, mc_result.loc[min_risk_idx, "weights"])
+            st.subheader("Additional Risk Metrics — in-sample")
  
             col1, col2 = st.columns(2)
             with col1:
                 st.write("--- Max Sharpe ---")
-                st.metric("Sortino Ratio", f"{sortino_max:.2f}")
-                st.metric("Max Drawdown", f"{mdd_max:.2%}")
-                st.metric("Calmar Ratio", f"{calmar_max:.2f}")
+                st.metric("Sortino Ratio", f"{risk_max['Sortino Ratio']:.2f}")
+                st.metric("Max Drawdown", f"{risk_max['Max Drawdown']:.2%}")
+                st.metric("CAGR", f"{risk_max['CAGR']:.2%}")
+                st.metric("Calmar Ratio", f"{risk_max['Calmar Ratio']:.2f}")
             with col2:
                 st.write("--- Min Risk ---")
-                st.metric("Sortino Ratio", f"{sortino_min:.2f}")
-                st.metric("Max Drawdown", f"{mdd_min:.2%}")
-                st.metric("Calmar Ratio", f"{calmar_min:.2f}")
+                st.metric("Sortino Ratio", f"{risk_min['Sortino Ratio']:.2f}")
+                st.metric("Max Drawdown", f"{risk_min['Max Drawdown']:.2%}")
+                st.metric("CAGR", f"{risk_min['CAGR']:.2%}")
+                st.metric("Calmar Ratio", f"{risk_min['Calmar Ratio']:.2f}")
     
             st.caption(
-                "Sortino Ratio = like the Sharpe ratio, but penalizes only downside volatility (losses), not gains above the average."
-                "Max Drawdown = the largest historical decline in portfolio value from peak to trough."
-                "Calmar Ratio = annual return divided by |Max Drawdown| — shows profit relative to the worst historical scenario."
+                "In-sample: the weights were optimized on the same data these metrics are measured on, "
+                "so they overstate what to expect out-of-sample (see the Backtest tab).  \n"
+                "Sortino Ratio = like the Sharpe ratio, but penalizes only downside volatility (losses), not gains above the average.  \n"
+                "Max Drawdown = the largest historical decline in portfolio value from peak to trough.  \n"
+                "CAGR = geometric (compound) annual growth rate of the daily-rebalanced portfolio.  \n"
+                "Calmar Ratio = CAGR divided by |Max Drawdown| — shows profit relative to the worst historical scenario."
             )
 
     with tab_proj:
@@ -281,20 +291,14 @@ if "data" in st.session_state:
         if "mc_result" not in st.session_state:
             st.warning("Please click **Start analysis** at the top and run the simulation in the **Optimalization** tab first!")
         else:
-            mc_result = st.session_state["mc_result"]
-            
-            col_return = next((c for c in ["Annual Expected Return", "Expected Return", "Expected Annual Return"] if c in mc_result.columns), mc_result.columns[0])
-            col_risk = next((c for c in ["Expected Annual Risk", "Annual Expected Risk", "Risk", "Volatility"] if c in mc_result.columns), mc_result.columns[1])
-            col_sharpe = next((c for c in ["Expected Sharpe Ratio", "Sharpe Ratio", "Sharpe"] if c in mc_result.columns), mc_result.columns[2])
+            exact_max_sharpe = st.session_state["exact_max_sharpe"]
+            exact_min_var = st.session_state["exact_min_var"]
 
-            max_sharpe_idx = mc_result[col_sharpe].idxmax()
-            min_risk_idx = mc_result[col_risk].idxmin()
-            
-            ret_max_sharpe = mc_result.loc[max_sharpe_idx, col_return]
-            risk_max_sharpe = mc_result.loc[max_sharpe_idx, col_risk]
+            ret_max_sharpe = exact_max_sharpe["Annual Return"]
+            risk_max_sharpe = exact_max_sharpe["Annual Risk"]
 
-            ret_min_risk = mc_result.loc[min_risk_idx, col_return]
-            risk_min_risk = mc_result.loc[min_risk_idx, col_risk]
+            ret_min_risk = exact_min_var["Annual Return"]
+            risk_min_risk = exact_min_var["Annual Risk"]
 
             strategy_choice = st.selectbox(
                 "Choose portfolio strategy for projection", 
@@ -437,7 +441,7 @@ if "data" in st.session_state:
                 split_date = get_split_date(daily_returns, train_fraction)
                 train, test = split_train_test(daily_returns, split_date)
  
-                num_assets = len(selected)
+                num_assets = daily_returns.shape[1]
                 equal_weights = np.array([1 / num_assets] * num_assets)
  
                 rf_train = get_risk_free_rate(str(train.index.min().date()), str(train.index.max().date()))
@@ -447,22 +451,23 @@ if "data" in st.session_state:
                                                             max_weight=st.session_state.get("max_weight", 1.0))
                 frozen_weights = frozen_portfolio["weights"]
  
-                avg_returns_test = test.mean()
-                cov_matrix_test = test.cov()
- 
-                frozen_perf = portfolio_performance(frozen_weights, avg_returns_test, cov_matrix_test, rf_test)
-                equal_perf = portfolio_performance(equal_weights, avg_returns_test, cov_matrix_test, rf_test)
- 
-                bench_data, _ = get_clean_data([BENCHMARK], str(test.index.min().date()), str(test.index.max().date()))
-                bench_returns = get_daily_returns(bench_data["Close"])
-                bench_perf = portfolio_performance(
-                    np.array([1.0]), bench_returns.mean(), bench_returns.cov(), rf_test
+                bench_data, _ = get_clean_data(
+                    [BENCHMARK], split_date,
+                    str((test.index.max() + pd.Timedelta(days=1)).date()),
                 )
+                bench_returns = get_daily_returns(bench_data["Close"])
+                bench_returns = bench_returns.loc[bench_returns.index > pd.Timestamp(split_date)]
+
+                strategies = {
+                    "Max Sharpe (train weights, daily-rebalanced)": strategy_metrics(test, frozen_weights, rf_test),
+                    "Equal Weight (daily-rebalanced)": strategy_metrics(test, equal_weights, rf_test),
+                    f"Benchmark ({BENCHMARK})": strategy_metrics(bench_returns, np.array([1.0]), rf_test),
+                }
  
                 st.session_state["backtest"] = {
                     "train": train, "test": test,
                     "frozen_weights": frozen_weights, "equal_weights": equal_weights,
-                    "frozen_perf": frozen_perf, "equal_perf": equal_perf, "bench_perf": bench_perf,
+                    "strategies": strategies,
                     "bench_returns": bench_returns,
                     "rf_train": rf_train, "rf_test": rf_test,
                 }
@@ -477,22 +482,28 @@ if "data" in st.session_state:
             st.caption(f"Risk-free rate (average ^IRX): train {bt['rf_train']:.2%}, test {bt['rf_test']:.2%}. "
                        "The train rate is used to pick the weights, the test rate for the Sharpe ratios below.")
  
-            comparison = pd.DataFrame({
-                "Strategy": ["Max Sharpe (frozen weights)", "Equal Weight", f"Benchmark ({BENCHMARK})"],
-                "Annual Return": [bt["frozen_perf"][0], bt["equal_perf"][0], bt["bench_perf"][0]],
-                "Annual Risk": [bt["frozen_perf"][1], bt["equal_perf"][1], bt["bench_perf"][1]],
-                "Sharpe Ratio": [bt["frozen_perf"][2], bt["equal_perf"][2], bt["bench_perf"][2]],
-            })
+            comparison = pd.DataFrame(bt["strategies"]).T.rename_axis("Strategy").reset_index()
             st.dataframe(
-                comparison.style.format({"Annual Return": "{:.2%}", "Annual Risk": "{:.2%}", "Sharpe Ratio": "{:.2f}"}),
+                comparison.style.format({
+                    "Annual Return (arithmetic)": "{:.2%}", "CAGR (geometric)": "{:.2%}",
+                    "Annual Risk": "{:.2%}", "Sharpe Ratio": "{:.2f}", "Max Drawdown": "{:.2%}",
+                }),
                 use_container_width=True,
             )
+            st.caption(
+                "Annual Return (arithmetic) = mean daily return × 252 (used for Sharpe). "
+                "CAGR (geometric) = compound annual growth actually realized over the test period. "
+                "Table metrics assume the portfolio is rebalanced back to its weights every day."
+            )
  
-            frozen_cum = compute_cumulative_value(bt["test"], bt["frozen_weights"])
-            equal_cum = compute_cumulative_value(bt["test"], bt["equal_weights"])
-            bench_cum = compute_cumulative_value(bt["bench_returns"], np.array([1.0]))
+            curves = {
+                "Max Sharpe (daily-rebalanced)": compute_cumulative_value(bt["test"], bt["frozen_weights"]),
+                "Max Sharpe (buy & hold, weights drift)": compute_buy_and_hold_value(bt["test"], bt["frozen_weights"]),
+                "Equal Weight (daily-rebalanced)": compute_cumulative_value(bt["test"], bt["equal_weights"]),
+                f"Benchmark ({BENCHMARK})": compute_cumulative_value(bt["bench_returns"], np.array([1.0])),
+            }
  
-            fig_bt = plot_backtest_cumulative(frozen_cum, equal_cum, bench_cum, BENCHMARK)
+            fig_bt = plot_backtest_cumulative(curves)
             st.plotly_chart(fig_bt, use_container_width=True)
 
     with tab_ml:

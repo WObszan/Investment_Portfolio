@@ -35,18 +35,21 @@ def plot_efficient_frontier(mc_result: pd.DataFrame, max_sharpe_idx, min_risk_id
     return fig
 
 
-def add_exact_frontier(fig: go.Figure, frontier: pd.DataFrame, exact_max_sharpe: dict, exact_min_var: dict) -> go.Figure:
-    """Overlay the exact scipy efficient frontier + exact portfolios onto an existing fig.
+def add_exact_frontier(
+    fig: go.Figure, frontier: pd.DataFrame | None, exact_max_sharpe: dict, exact_min_var: dict
+) -> go.Figure:
+    """Overlay the exact scipy portfolios (and optionally the exact frontier) onto an existing fig.
 
     Frontier points where the optimizer failed (`success == False`) are not plotted.
     """
-    if "success" in frontier.columns:
-        frontier = frontier[frontier["success"]]
-    fig.add_trace(go.Scatter(
-        x=frontier["Risk"], y=frontier["Target Return"],
-        mode="lines", line=dict(color="green", width=2, dash="dash"),
-        name="Efficient Frontier (scipy)",
-    ))
+    if frontier is not None:
+        if "success" in frontier.columns:
+            frontier = frontier[frontier["success"].astype(bool)]
+        fig.add_trace(go.Scatter(
+            x=frontier["Risk"], y=frontier["Target Return"],
+            mode="lines", line=dict(color="green", width=2, dash="dash"),
+            name="Efficient Frontier (scipy)",
+        ))
     fig.add_trace(go.Scatter(
         x=[exact_max_sharpe["Annual Risk"]], y=[exact_max_sharpe["Annual Return"]],
         mode="markers", marker=dict(size=14, symbol="diamond", color="red"),
@@ -99,14 +102,13 @@ def plot_cluster_scatter(clustered: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def plot_backtest_cumulative(
-    frozen_cum: pd.Series, equal_cum: pd.Series, bench_cum: pd.Series, benchmark: str
-) -> go.Figure:
-    """Cumulative value over the test period for the frozen, equal-weight, and benchmark strategies."""
+def plot_backtest_cumulative(curves: dict[str, pd.Series]) -> go.Figure:
+    """Cumulative value over the test period (start = 1.0), one line per strategy."""
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=frozen_cum.index, y=frozen_cum.values, mode="lines", name="Max Sharpe (frozen)"))
-    fig.add_trace(go.Scatter(x=equal_cum.index, y=equal_cum.values, mode="lines", name="Equal Weight"))
-    fig.add_trace(go.Scatter(x=bench_cum.index, y=bench_cum.values, mode="lines", name=f"Benchmark ({benchmark})"))
+    for name, series in curves.items():
+        dash = "dot" if "buy & hold" in name else None
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name=name,
+                                 line=dict(dash=dash)))
     fig.update_layout(title="Cumulative portfolio value over the test period (start = 1.0)")
     return fig
 
