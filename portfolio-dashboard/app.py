@@ -168,10 +168,16 @@ if "data" in st.session_state:
 
     with tab_opt:
         n_sim = st.slider("Select number of Monte Carlo simulations", 1000, 20000, 10000, step=1000)
+        min_cap = float(np.ceil(100 / daily_returns.shape[1] / 5) * 5 / 100)
+        max_weight = st.slider(
+            "Max weight per asset (applies to Monte Carlo, frontier, exact portfolios and backtest)",
+            min_cap, 1.0, 1.0, step=0.05, key="max_weight",
+        )
  
         if st.button("Start Optimalization"):
             with st.spinner("Portfolio simulating..."):
-                mc_result = run_monte_carlo(daily_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate)
+                mc_result = run_monte_carlo(daily_returns, n_simulations=n_sim, risk_free_rate=risk_free_rate,
+                                            max_weight=max_weight)
             st.session_state["mc_result"] = mc_result
  
         if "mc_result" in st.session_state:
@@ -184,10 +190,16 @@ if "data" in st.session_state:
             show_exact_frontier = st.checkbox("Show the exact efficient frontier")
             if show_exact_frontier:
                 with st.spinner("Calculating the exact efficient frontier..."):
-                    frontier = run_efficient_frontier(daily_returns)
-                    exact_min_var = get_min_var_portfolio(daily_returns)
-                    exact_max_sharpe = get_max_sharpe_portfolio(daily_returns, risk_free_rate=risk_free_rate)
-                
+                    frontier = run_efficient_frontier(daily_returns, max_weight=max_weight)
+                    exact_min_var = get_min_var_portfolio(daily_returns, max_weight=max_weight)
+                    exact_max_sharpe = get_max_sharpe_portfolio(daily_returns, risk_free_rate=risk_free_rate,
+                                                                max_weight=max_weight)
+
+                n_failed = int((~frontier["success"]).sum())
+                if n_failed:
+                    st.warning(f"{n_failed} of {len(frontier)} frontier points did not converge and are not plotted.")
+                if not (exact_min_var["success"] and exact_max_sharpe["success"]):
+                    st.warning("The exact optimizer did not fully converge; treat the scipy portfolios with caution.")
                 fig = add_exact_frontier(fig, frontier, exact_max_sharpe, exact_min_var)
 
             st.plotly_chart(fig, use_container_width=True)
@@ -427,7 +439,8 @@ if "data" in st.session_state:
                 num_assets = len(selected)
                 equal_weights = np.array([1 / num_assets] * num_assets)
  
-                frozen_portfolio = get_max_sharpe_portfolio(train, risk_free_rate=risk_free_rate)
+                frozen_portfolio = get_max_sharpe_portfolio(train, risk_free_rate=risk_free_rate,
+                                                            max_weight=st.session_state.get("max_weight", 1.0))
                 frozen_weights = frozen_portfolio["weights"]
  
                 avg_returns_test = test.mean()

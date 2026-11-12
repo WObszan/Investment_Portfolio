@@ -36,7 +36,12 @@ def plot_efficient_frontier(mc_result: pd.DataFrame, max_sharpe_idx, min_risk_id
 
 
 def add_exact_frontier(fig: go.Figure, frontier: pd.DataFrame, exact_max_sharpe: dict, exact_min_var: dict) -> go.Figure:
-    """Overlay the exact scipy efficient frontier + exact portfolios onto an existing fig."""
+    """Overlay the exact scipy efficient frontier + exact portfolios onto an existing fig.
+
+    Frontier points where the optimizer failed (`success == False`) are not plotted.
+    """
+    if "success" in frontier.columns:
+        frontier = frontier[frontier["success"]]
     fig.add_trace(go.Scatter(
         x=frontier["Risk"], y=frontier["Target Return"],
         mode="lines", line=dict(color="green", width=2, dash="dash"),

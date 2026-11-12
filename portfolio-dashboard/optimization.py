@@ -20,17 +20,48 @@ def portfolio_performance(
     return annual_return, annual_risk, sharpe_ratio
 
 
-def run_monte_carlo(daily_returns: pd.DataFrame, n_simulations: int = 10000, risk_free_rate: float = 0.0) -> pd.DataFrame:
-    """Simulate random portfolios, same idea as the notebook's Monte Carlo loop."""
+def cap_weights(weights: np.ndarray, max_weight: float) -> np.ndarray:
+    """Project rows of non-negative weights (summing to 1) onto the cap w_i <= max_weight.
+
+    Excess above the cap is redistributed proportionally to the uncapped assets until
+    no weight exceeds the cap. Requires max_weight * n_assets >= 1.
+    """
+    w = np.atleast_2d(np.asarray(weights, dtype=float)).copy()
+    for _ in range(w.shape[1]):
+        over = w > max_weight + 1e-12
+        if not over.any():
+            break
+        excess = np.where(over, w - max_weight, 0.0).sum(axis=1, keepdims=True)
+        w = np.where(over, max_weight, w)
+        free = (w < max_weight - 1e-12)
+        free_total = np.where(free, w, 0.0).sum(axis=1, keepdims=True)
+        n_free = free.sum(axis=1, keepdims=True)
+        # Proportional redistribution; fall back to equal split if free weights are all zero
+        share = np.where(free_total > 0, w / np.where(free_total > 0, free_total, 1.0),
+                         1.0 / np.maximum(n_free, 1))
+        w = np.where(free, w + excess * share, w)
+    return w
+
+
+def run_monte_carlo(
+    daily_returns: pd.DataFrame,
+    n_simulations: int = 10000,
+    risk_free_rate: float = 0.0,
+    max_weight: float = 1.0,
+) -> pd.DataFrame:
+    """Simulate random long-only portfolios whose weights respect `max_weight`."""
     avg_returns = daily_returns.mean()
     cov_matrix = daily_returns.cov()
     num_assets = daily_returns.shape[1]
+    _check_max_weight(max_weight, num_assets)
+
+    all_weights = np.random.rand(n_simulations, num_assets)
+    all_weights /= all_weights.sum(axis=1, keepdims=True)
+    if max_weight < 1.0:
+        all_weights = cap_weights(all_weights, max_weight)
 
     results = []
-    for _ in range(n_simulations):
-        weights = np.random.rand(num_assets)
-        weights /= weights.sum()
-
+    for weights in all_weights:
         ret, risk, sharpe = portfolio_performance(weights, avg_returns, cov_matrix, risk_free_rate)
         results.append(
             {
@@ -56,15 +87,54 @@ def portfolio_return_equals_target(weights: np.ndarray, avg_returns: pd.Series, 
     return annual_return - target_return
 
 
+def _check_max_weight(max_weight: float, num_assets: int) -> None:
+    """Raise if no long-only portfolio with w_i <= max_weight can sum to 1."""
+    if not 0 < max_weight <= 1:
+        raise ValueError(f"max_weight must be in (0, 1], got {max_weight}")
+    if max_weight * num_assets < 1 - 1e-9:
+        raise ValueError(
+            f"max_weight={max_weight} is infeasible for {num_assets} assets "
+            f"(needs max_weight >= 1/{num_assets})"
+        )
+
+
+def _weight_bounds(max_weight: float, num_assets: int) -> tuple[tuple[float, float], ...]:
+    _check_max_weight(max_weight, num_assets)
+    return tuple((0.0, max_weight) for _ in range(num_assets))
+
+
+def _extreme_feasible_return(avg_returns: pd.Series, max_weight: float, highest: bool) -> float:
+    """Highest (or lowest) annual return reachable with weights in [0, max_weight] summing to 1."""
+    sorted_returns = np.sort(avg_returns.to_numpy())
+    if highest:
+        sorted_returns = sorted_returns[::-1]
+    remaining, total = 1.0, 0.0
+    for r in sorted_returns:
+        w = min(max_weight, remaining)
+        total += w * r
+        remaining -= w
+        if remaining <= 1e-12:
+            break
+    return total * TRADING_DAYS_PER_YEAR
+
+
 @st.cache_data(show_spinner=False)
-def run_efficient_frontier(daily_returns: pd.DataFrame, n_points: int = 100) -> pd.DataFrame:
+def run_efficient_frontier(daily_returns: pd.DataFrame, n_points: int = 100, max_weight: float = 1.0) -> pd.DataFrame:
+    """Minimum-variance frontier over the feasible return range for weights in [0, max_weight].
+
+    The `success` column flags points where SLSQP did not converge; callers should drop them.
+    """
     avg_returns = daily_returns.mean()
     cov_matrix = daily_returns.cov()
     num_assets = daily_returns.shape[1]
 
-    bounds = tuple((0, 0.5) for _ in range(num_assets))
+    bounds = _weight_bounds(max_weight, num_assets)
     x0 = np.array([1 / num_assets] * num_assets)
-    target_returns = np.linspace(avg_returns.min() * TRADING_DAYS_PER_YEAR, avg_returns.max() * TRADING_DAYS_PER_YEAR, n_points)
+    target_returns = np.linspace(
+        _extreme_feasible_return(avg_returns, max_weight, highest=False),
+        _extreme_feasible_return(avg_returns, max_weight, highest=True),
+        n_points,
+    )
 
     results = []
     for target in target_returns:
@@ -77,18 +147,20 @@ def run_efficient_frontier(daily_returns: pd.DataFrame, n_points: int = 100) -> 
         )
         results.append({ "weights": result.x,
                     "Target Return": target,
-                    "Risk": np.sqrt(result.fun * TRADING_DAYS_PER_YEAR)})
+                    "Risk": np.sqrt(max(result.fun, 0.0) * TRADING_DAYS_PER_YEAR),
+                    "success": bool(result.success)})
 
     return pd.DataFrame(results)
 
 
 @st.cache_data(show_spinner=False)
-def get_min_var_portfolio(daily_returns: pd.DataFrame) -> dict:
+def get_min_var_portfolio(daily_returns: pd.DataFrame, max_weight: float = 1.0) -> dict:
+    """Exact minimum-variance portfolio with weights in [0, max_weight]."""
     avg_returns = daily_returns.mean()
     cov_matrix = daily_returns.cov()
     num_assets = daily_returns.shape[1]
 
-    bounds = tuple((0, 1) for _ in range(num_assets))
+    bounds = _weight_bounds(max_weight, num_assets)
     x0 = np.array([1 / num_assets] * num_assets)
 
     constraints = [{"type": "eq", "fun": weights_sum_to_one}]
@@ -96,7 +168,8 @@ def get_min_var_portfolio(daily_returns: pd.DataFrame) -> dict:
 
     return {"weights": result.x,
              "Annual Return": np.dot(result.x, avg_returns) * TRADING_DAYS_PER_YEAR,
-             "Annual Risk": np.sqrt(result.fun * TRADING_DAYS_PER_YEAR)}
+             "Annual Risk": np.sqrt(result.fun * TRADING_DAYS_PER_YEAR),
+             "success": bool(result.success)}
 
 
 def negative_sharpe_ratio(weights, avg_returns, cov_matrix, risk_free_rate=0.0):
@@ -105,12 +178,13 @@ def negative_sharpe_ratio(weights, avg_returns, cov_matrix, risk_free_rate=0.0):
 
 
 @st.cache_data(show_spinner=False)
-def get_max_sharpe_portfolio(daily_returns: pd.DataFrame, risk_free_rate: float = 0.0) -> dict:
+def get_max_sharpe_portfolio(daily_returns: pd.DataFrame, risk_free_rate: float = 0.0, max_weight: float = 1.0) -> dict:
+    """Exact maximum-Sharpe (tangency) portfolio with weights in [0, max_weight]."""
     avg_returns = daily_returns.mean()
     cov_matrix = daily_returns.cov()
     num_assets = daily_returns.shape[1]
 
-    bounds = tuple((0, 1) for _ in range(num_assets))
+    bounds = _weight_bounds(max_weight, num_assets)
     x0 = np.array([1 / num_assets] * num_assets)
 
     constraints = [{"type": "eq", "fun": weights_sum_to_one}]
@@ -120,7 +194,8 @@ def get_max_sharpe_portfolio(daily_returns: pd.DataFrame, risk_free_rate: float 
     return {"weights": result.x,
              "Annual Return": ret,
              "Annual Risk": risk,
-             "Sharpe Ratio": sharpe}
+             "Sharpe Ratio": sharpe,
+             "success": bool(result.success)}
 
 def calculate_portfolio_growth(
     initial_amount: float,

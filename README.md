@@ -146,7 +146,9 @@ portfolio-dashboard/
 ## Limitations
 
 - Backtests assume no transaction costs, taxes, or slippage.
-- No short selling; weights are bounded to `[0, 1]`.
+- No short selling; weights are bounded to `[0, max_weight]` (default 1.0, set in the
+  Optimization tab). The same bound is used by Monte Carlo, the exact frontier, the exact
+  Max Sharpe / Min Variance solvers and the backtest.
 - Out-of-sample results depend on the chosen train/test split date and are not
   guaranteed to hold on future data.
 - The ML model predicts direction only, over a fixed 5-day horizon — not calibrated
