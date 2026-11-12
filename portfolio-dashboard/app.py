@@ -310,21 +310,26 @@ if "data" in st.session_state:
                 chosen_return, chosen_risk, years
             )
 
-            final_det = growth_df["Expected (Mean)"].iloc[-1]
+            final_median = growth_df["Median (50th pct)"].iloc[-1]
+            final_low = growth_df["Pessimistic (16th pct)"].iloc[-1]
+            final_high = growth_df["Optimistic (84th pct)"].iloc[-1]
             total_invested = initial_dep + (contribution * (years * (12 if frequency == "Monthly" else 1)))
-            total_profit = final_det - total_invested
+            total_profit = final_median - total_invested
 
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Personal Deposits", f"{total_invested:,.2f}$")
-            m2.metric("Estimated Portfolio Value", f"{final_det:,.2f}$", delta=f"+{total_profit:,.2f}$")
-            m3.metric("Expected Annual Return", f"{chosen_return:.2%}")
+            m2.metric("Median Portfolio Value", f"{final_median:,.2f}$", delta=f"{total_profit:+,.2f}$")
+            m3.metric("16th–84th Percentile Range", f"{final_low:,.0f}$ – {final_high:,.0f}$")
+            m4.metric("Expected Annual Return", f"{chosen_return:.2%}")
 
             fig_growth = plot_portfolio_growth(growth_df, strategy_choice)
             st.plotly_chart(fig_growth, width="stretch")
-            
+
             st.caption(
-                "💡 *The simulation uses the historical return and annual risk of the selected portfolio from the Monte Carlo simulation. "
-                "Optimistic and pessimistic variants account for standard deviation (+/- 1σ).* "
+                "💡 *The simulation uses the historical return and annual risk of the selected portfolio. "
+                "The shaded band is the 16th–84th percentile range of 5,000 Monte Carlo paths "
+                "(normally distributed period returns); the solid line is the median path and the "
+                "dashed line is the deterministic path at the mean return.* "
             )
 
 

@@ -106,14 +106,29 @@ def plot_backtest_cumulative(
     return fig
 
 def plot_portfolio_growth(growth_df: pd.DataFrame, strategy_choice: str) -> go.Figure:
-    """Fan chart showing expected, optimistic, and pessimistic portfolio growth over time."""
-    growth_df = growth_df.copy()
-    growth_df["Years"] = growth_df["Period"] / 12
-    fig = px.line(
-        growth_df, x="Years", 
-        y=["Expected (Mean)", "Optimistic (+1σ)", "Pessimistic (-1σ)"],
+    """Fan chart: Monte Carlo 16th-84th percentile band, median and deterministic mean path."""
+    x = growth_df["Years"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Pessimistic (16th pct)"], mode="lines",
+        line=dict(width=0.5, color="rgba(99,110,250,0.6)"), name="Pessimistic (16th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Optimistic (84th pct)"], mode="lines", fill="tonexty",
+        fillcolor="rgba(99,110,250,0.2)", line=dict(width=0.5, color="rgba(99,110,250,0.6)"),
+        name="Optimistic (84th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Median (50th pct)"], mode="lines",
+        line=dict(width=2.5, color="rgb(99,110,250)"), name="Median (50th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Expected (Mean)"], mode="lines",
+        line=dict(width=1.5, dash="dash", color="gray"), name="Expected (Mean, deterministic)",
+    ))
+    fig.update_layout(
         title=f"Portfolio Value Projection for Strategy: {strategy_choice}",
-        labels={"Years": "Investment Horizon (Years)", "value": "Portfolio Value ($)"}
+        xaxis_title="Investment Horizon (Years)", yaxis_title="Portfolio Value ($)",
     )
     return fig
 

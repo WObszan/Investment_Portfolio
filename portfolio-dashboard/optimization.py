@@ -125,46 +125,53 @@ def get_max_sharpe_portfolio(daily_returns: pd.DataFrame, risk_free_rate: float 
 def calculate_portfolio_growth(
     initial_amount: float,
     periodic_contribution: float,
-    frequency: str, 
+    frequency: str,
     annual_return: float,
     annual_risk: float,
-    years: int
+    years: int,
+    n_simulations: int = 5000,
+    seed: int = 42,
 ) -> pd.DataFrame:
+    """DCA projection: deterministic mean path plus Monte Carlo 16th/50th/84th percentile paths.
+
+    Each period the contribution is deposited first, then a simulated return is applied.
+    Period returns are normal with mean = annual_return / periods_per_year and
+    sd = annual_risk / sqrt(periods_per_year); returns are floored at -100%.
+    Percentiles are taken across simulations separately for every period, so the band
+    widens like sqrt(T) instead of T.
+    """
     periods_per_year = 12 if frequency == "Monthly" else 1
     total_periods = years * periods_per_year
-    
+
     period_return = annual_return / periods_per_year
     period_risk = annual_risk / np.sqrt(periods_per_year)
-    
-    dates = []
-    deterministic_values = []
-    optimistic_values = []
-    pessimistic_values = []
-    
-    curr_det = initial_amount
-    curr_opt = initial_amount
-    curr_pest = initial_amount
-    
-    opt_rate = period_return + period_risk
-    pest_rate = max(-1.0, period_return - period_risk)
-    
-    for i in range(total_periods + 1):
-        if i > 0:
-            curr_det = (curr_det + periodic_contribution) * (1 + period_return)
-            curr_opt = (curr_opt + periodic_contribution) * (1 + opt_rate)
-            curr_pest = (curr_pest + periodic_contribution) * (1 + pest_rate)
-            
-        deterministic_values.append(curr_det)
-        optimistic_values.append(curr_opt)
-        pessimistic_values.append(curr_pest)
-        
-    df_growth = pd.DataFrame({
-        "Period": list(range(total_periods + 1)),
+
+    rng = np.random.default_rng(seed)
+    sim_returns = rng.normal(period_return, period_risk, size=(total_periods, n_simulations))
+    sim_returns = np.maximum(sim_returns, -1.0)
+
+    sim_values = np.empty((total_periods + 1, n_simulations))
+    sim_values[0] = initial_amount
+    deterministic_values = np.empty(total_periods + 1)
+    deterministic_values[0] = initial_amount
+    for i in range(1, total_periods + 1):
+        sim_values[i] = (sim_values[i - 1] + periodic_contribution) * (1 + sim_returns[i - 1])
+        deterministic_values[i] = (deterministic_values[i - 1] + periodic_contribution) * (1 + period_return)
+
+    p16, p50, p84 = np.percentile(sim_values, [16, 50, 84], axis=1)
+    if annual_risk == 0:
+        # No randomness: avoid floating-point noise between identical paths
+        p16 = p50 = p84 = deterministic_values
+
+    periods = np.arange(total_periods + 1)
+    return pd.DataFrame({
+        "Period": periods,
+        "Years": periods / periods_per_year,
         "Expected (Mean)": deterministic_values,
-        "Optimistic (+1σ)": optimistic_values,
-        "Pessimistic (-1σ)": pessimistic_values,
+        "Median (50th pct)": p50,
+        "Optimistic (84th pct)": p84,
+        "Pessimistic (16th pct)": p16,
     })
-    return df_growth
 
 
 def get_capped_return(avg_returns: pd.Series, max_annual_return: float = 0.20) -> pd.Series:
