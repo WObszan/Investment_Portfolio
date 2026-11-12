@@ -195,42 +195,39 @@ ticker_to_name = {
 }
 
 @st.cache_data(show_spinner=False)
-def get_clean_data(tickers: list[str], start: str, end: str):
-  if not tickers:
-    return pd.DataFrame(), []
+def get_clean_data(tickers: list[str], start: str, end: str) -> tuple[pd.DataFrame, list[str]]:
+    """Download OHLCV for all tickers in a single request and drop tickers with no data.
 
-  valid_tickers = []
-  
-  for t in tickers:
+    Prices are forward-filled to cover isolated gaps after listing; days before a ticker's
+    first price stay NaN (see `get_daily_returns`). Missing volume is set to 0.
+    Returns the (Price, Ticker) MultiIndex frame and the list of tickers that have data.
+    """
+    if not tickers:
+        return pd.DataFrame(), []
+
     try:
-      test_df = yf.download(t, period="5d", progress=False, threads=False)
-      if not test_df.empty and "Close" in test_df.columns:
-        valid_tickers.append(t)
+        data = yf.download(list(tickers), start=start, end=end, progress=False, threads=False)
     except Exception:
-      continue
+        return pd.DataFrame(), []
 
-  if not valid_tickers:
-    return pd.DataFrame(), []
+    if data is None or data.empty:
+        return pd.DataFrame(), []
+    if not isinstance(data.columns, pd.MultiIndex):
+        # Older yfinance versions return flat columns for a single ticker
+        data.columns = pd.MultiIndex.from_product([data.columns, [tickers[0]]])
+    if "Close" not in data.columns.get_level_values(0):
+        return pd.DataFrame(), []
 
-  data = yf.download(valid_tickers, start=start, end=end, progress=False, threads=False)
+    close = data["Close"]
+    valid_tickers = [t for t in close.columns if close[t].notna().any()]
+    if not valid_tickers:
+        return pd.DataFrame(), []
 
-  if data.empty:
-    return pd.DataFrame(), []
-
-  if len(valid_tickers) == 1:
+    data = data.loc[:, data.columns.get_level_values(1).isin(valid_tickers)].copy()
     data["Volume"] = data["Volume"].fillna(0)
     data = data.ffill()
+
     return data, valid_tickers
-
-  try:
-    available_tickers = data["Close"].columns.tolist()
-  except KeyError:
-    return pd.DataFrame(), []
-
-  data["Volume"] = data["Volume"].fillna(0)
-  data = data.ffill()
-
-  return data, available_tickers
 
 
 @st.cache_data(show_spinner=False)

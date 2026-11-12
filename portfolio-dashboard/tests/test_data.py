@@ -86,3 +86,36 @@ def test_split_investable_excludes_indices():
 
     assert investable == ["AAPL", "SPY", "MSFT"]
     assert excluded == ["^GSPC", "^VIX"]
+
+
+def test_categorized_tickers_defined_once():
+    import callbacks
+    import data
+
+    assert callbacks.categorized_tickers is data.categorized_tickers
+
+
+def test_get_clean_data_downloads_once_and_drops_empty_tickers(monkeypatch):
+    import data
+
+    calls = []
+    dates = pd.date_range("2022-01-03", periods=6, freq="B")
+    good = [np.nan, 10.0, 11.0, np.nan, 12.0, 13.0]  # not listed on day 1, gap on day 4
+
+    def fake_download(tickers, **kwargs):
+        calls.append(tickers)
+        columns = pd.MultiIndex.from_product([["Close", "Volume"], ["GOOD", "BAD"]], names=["Price", "Ticker"])
+        values = np.column_stack([good, [np.nan] * 6, [100.0] * 6, [np.nan] * 6])
+        return pd.DataFrame(values, index=dates, columns=columns)
+
+    monkeypatch.setattr(data.yf, "download", fake_download)
+    data.get_clean_data.clear()
+
+    frame, valid = data.get_clean_data(["GOOD", "BAD"], "2022-01-01", "2022-01-31")
+
+    assert len(calls) == 1
+    assert valid == ["GOOD"]
+    assert list(frame["Close"].columns) == ["GOOD"]
+    close = frame["Close"]["GOOD"]
+    assert np.isnan(close.iloc[0])           # pre-listing stays NaN
+    assert close.iloc[3] == 11.0             # post-listing gap is forward-filled
