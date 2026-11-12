@@ -50,7 +50,8 @@ cd portfolio-dashboard
 uv venv && uv pip install -r requirements.txt
 ```
 
-> `pandas_ta` is unpinned — if the install fails, this is the package to check first.
+> All dependencies are pinned to the versions the tests and app were checked with (Python 3.12).
+> `pandas-ta` is pinned to a pre-release (`0.4.71b0`) — if the install fails, this is the package to check first.
 
 ## Common commands
 
