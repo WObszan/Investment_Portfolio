@@ -35,13 +35,21 @@ def plot_efficient_frontier(mc_result: pd.DataFrame, max_sharpe_idx, min_risk_id
     return fig
 
 
-def add_exact_frontier(fig: go.Figure, frontier: pd.DataFrame, exact_max_sharpe: dict, exact_min_var: dict) -> go.Figure:
-    """Overlay the exact scipy efficient frontier + exact portfolios onto an existing fig."""
-    fig.add_trace(go.Scatter(
-        x=frontier["Risk"], y=frontier["Target Return"],
-        mode="lines", line=dict(color="green", width=2, dash="dash"),
-        name="Efficient Frontier (scipy)",
-    ))
+def add_exact_frontier(
+    fig: go.Figure, frontier: pd.DataFrame | None, exact_max_sharpe: dict, exact_min_var: dict
+) -> go.Figure:
+    """Overlay the exact scipy portfolios (and optionally the exact frontier) onto an existing fig.
+
+    Frontier points where the optimizer failed (`success == False`) are not plotted.
+    """
+    if frontier is not None:
+        if "success" in frontier.columns:
+            frontier = frontier[frontier["success"].astype(bool)]
+        fig.add_trace(go.Scatter(
+            x=frontier["Risk"], y=frontier["Target Return"],
+            mode="lines", line=dict(color="green", width=2, dash="dash"),
+            name="Efficient Frontier (scipy)",
+        ))
     fig.add_trace(go.Scatter(
         x=[exact_max_sharpe["Annual Risk"]], y=[exact_max_sharpe["Annual Return"]],
         mode="markers", marker=dict(size=14, symbol="diamond", color="red"),
@@ -94,26 +102,40 @@ def plot_cluster_scatter(clustered: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def plot_backtest_cumulative(
-    frozen_cum: pd.Series, equal_cum: pd.Series, bench_cum: pd.Series, benchmark: str
-) -> go.Figure:
-    """Cumulative value over the test period for the frozen, equal-weight, and benchmark strategies."""
+def plot_backtest_cumulative(curves: dict[str, pd.Series]) -> go.Figure:
+    """Cumulative value over the test period (start = 1.0), one line per strategy."""
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=frozen_cum.index, y=frozen_cum.values, mode="lines", name="Max Sharpe (frozen)"))
-    fig.add_trace(go.Scatter(x=equal_cum.index, y=equal_cum.values, mode="lines", name="Equal Weight"))
-    fig.add_trace(go.Scatter(x=bench_cum.index, y=bench_cum.values, mode="lines", name=f"Benchmark ({benchmark})"))
+    for name, series in curves.items():
+        dash = "dot" if "buy & hold" in name else None
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines", name=name,
+                                 line=dict(dash=dash)))
     fig.update_layout(title="Cumulative portfolio value over the test period (start = 1.0)")
     return fig
 
 def plot_portfolio_growth(growth_df: pd.DataFrame, strategy_choice: str) -> go.Figure:
-    """Fan chart showing expected, optimistic, and pessimistic portfolio growth over time."""
-    growth_df = growth_df.copy()
-    growth_df["Years"] = growth_df["Period"] / 12
-    fig = px.line(
-        growth_df, x="Years", 
-        y=["Expected (Mean)", "Optimistic (+1σ)", "Pessimistic (-1σ)"],
+    """Fan chart: Monte Carlo 16th-84th percentile band, median and deterministic mean path."""
+    x = growth_df["Years"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Pessimistic (16th pct)"], mode="lines",
+        line=dict(width=0.5, color="rgba(99,110,250,0.6)"), name="Pessimistic (16th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Optimistic (84th pct)"], mode="lines", fill="tonexty",
+        fillcolor="rgba(99,110,250,0.2)", line=dict(width=0.5, color="rgba(99,110,250,0.6)"),
+        name="Optimistic (84th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Median (50th pct)"], mode="lines",
+        line=dict(width=2.5, color="rgb(99,110,250)"), name="Median (50th pct)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=growth_df["Expected (Mean)"], mode="lines",
+        line=dict(width=1.5, dash="dash", color="gray"), name="Expected (Mean, deterministic)",
+    ))
+    fig.update_layout(
         title=f"Portfolio Value Projection for Strategy: {strategy_choice}",
-        labels={"Years": "Investment Horizon (Years)", "value": "Portfolio Value ($)"}
+        xaxis_title="Investment Horizon (Years)", yaxis_title="Portfolio Value ($)",
     )
     return fig
 

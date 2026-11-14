@@ -1,12 +1,13 @@
-numpy
-pandas
-plotly
-scikit-learn
-scipy
-streamlit
-yfinance
-matplotlib
-xgboost
-shap
-optuna
-pandas-ta
+# Pinned to the versions tested with Python 3.12 (pytest green, Streamlit app checked).
+numpy==2.2.6
+pandas==3.1.1
+plotly==7.1.0
+scikit-learn==1.9.1
+scipy==1.18.1
+streamlit==1.67.0
+yfinance==1.8.0
+matplotlib==3.11.2
+xgboost==3.4.1
+shap==0.54.1
+optuna==5.0.0
+pandas-ta==0.4.71b0

@@ -195,57 +195,87 @@ ticker_to_name = {
 }
 
 @st.cache_data(show_spinner=False)
-def get_clean_data(tickers: list[str], start: str, end: str):
-  if not tickers:
-    return pd.DataFrame(), []
+def get_clean_data(tickers: list[str], start: str, end: str) -> tuple[pd.DataFrame, list[str]]:
+    """Download OHLCV for all tickers in a single request and drop tickers with no data.
 
-  valid_tickers = []
-  
-  for t in tickers:
+    Prices are forward-filled to cover isolated gaps after listing; days before a ticker's
+    first price stay NaN (see `get_daily_returns`). Missing volume is set to 0.
+    Returns the (Price, Ticker) MultiIndex frame and the list of tickers that have data.
+    """
+    if not tickers:
+        return pd.DataFrame(), []
+
     try:
-      test_df = yf.download(t, period="5d", progress=False, threads=False)
-      if not test_df.empty and "Close" in test_df.columns:
-        valid_tickers.append(t)
+        data = yf.download(list(tickers), start=start, end=end, progress=False, threads=False)
     except Exception:
-      continue
+        return pd.DataFrame(), []
 
-  if not valid_tickers:
-    return pd.DataFrame(), []
+    if data is None or data.empty:
+        return pd.DataFrame(), []
+    if not isinstance(data.columns, pd.MultiIndex):
+        # Older yfinance versions return flat columns for a single ticker
+        data.columns = pd.MultiIndex.from_product([data.columns, [tickers[0]]])
+    if "Close" not in data.columns.get_level_values(0):
+        return pd.DataFrame(), []
 
-  data = yf.download(valid_tickers, start=start, end=end, progress=False, threads=False)
+    close = data["Close"]
+    valid_tickers = [t for t in close.columns if close[t].notna().any()]
+    if not valid_tickers:
+        return pd.DataFrame(), []
 
-  if data.empty:
-    return pd.DataFrame(), []
-
-  if len(valid_tickers) == 1:
+    data = data.loc[:, data.columns.get_level_values(1).isin(valid_tickers)].copy()
     data["Volume"] = data["Volume"].fillna(0)
     data = data.ffill()
+
     return data, valid_tickers
-
-  try:
-    available_tickers = data["Close"].columns.tolist()
-  except KeyError:
-    return pd.DataFrame(), []
-
-  data["Volume"] = data["Volume"].fillna(0)
-  data = data.ffill()
-
-  return data, available_tickers
 
 
 @st.cache_data(show_spinner=False)
 def get_daily_returns(close_prices: pd.DataFrame) -> pd.DataFrame:
-    """Compute daily percentage returns from close prices."""
-    returns = close_prices.pct_change()
-    returns = returns.dropna(how="all")
-    returns = returns.fillna(0)
-    return returns
+    """Daily percentage returns over the common period where every ticker has data.
+
+    Rows before the latest listing date are dropped instead of being filled with 0%,
+    which would understate volatility and correlation. Isolated gaps after listing are
+    already forward-filled on prices in `get_clean_data`.
+    """
+    returns = close_prices.pct_change(fill_method=None)
+    return returns.dropna(how="any")
 
 
-def get_risk_free_rate(start: str, end: str) -> float:
-    data, _ = get_clean_data(['^IRX'], start, end)
-    close_data =  data['Close'].squeeze()
-    return float(close_data.iloc[-1] / 100)
+def get_listing_dates(close_prices: pd.DataFrame) -> pd.Series:
+    """First date with a valid close price for every ticker, latest first."""
+    return close_prices.apply(lambda col: col.first_valid_index()).sort_values(ascending=False)
+
+
+def split_investable(tickers: list[str]) -> tuple[list[str], list[str]]:
+    """Split tickers into investable assets and non-investable indices (symbols starting with '^')."""
+    investable = [t for t in tickers if not t.startswith("^")]
+    excluded = [t for t in tickers if t.startswith("^")]
+    return investable, excluded
+
+
+def get_risk_free_rate(start: str, end: str, fallback: float = 0.0) -> float:
+    """Average annualized 13-week T-bill yield (^IRX) over [start, end], as a decimal.
+
+    Using the window average (instead of the latest quote) avoids look-ahead when the
+    rate is applied to a historical period. `end` is inclusive. If the download fails or
+    returns no data, `fallback` is returned and a Streamlit warning is shown.
+    """
+    end_exclusive = (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        data, _ = get_clean_data(["^IRX"], start, end_exclusive)
+        close = data["Close"].squeeze().dropna() if not data.empty else pd.Series(dtype=float)
+    except Exception:
+        close = pd.Series(dtype=float)
+
+    if close.empty:
+        st.warning(
+            f"Could not download the risk-free rate (^IRX) for {start} – {end}; "
+            f"using {fallback:.2%} instead."
+        )
+        return float(fallback)
+    return float(close.mean() / 100)
+
 
 def get_split_date(daily_returns: pd.DataFrame, train_fraction: float = 0.75) -> str:
     daily_returns_len = len(daily_returns)
@@ -256,6 +286,8 @@ def get_split_date(daily_returns: pd.DataFrame, train_fraction: float = 0.75) ->
                                   
                                
 def split_train_test(daily_returns: pd.DataFrame, split_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_daily_returns = daily_returns.loc[:split_date]
-    test_daily_returns = daily_returns.loc[split_date:]
+    """Chronological split: train includes `split_date`, test starts strictly after it."""
+    split_ts = pd.Timestamp(split_date)
+    train_daily_returns = daily_returns.loc[daily_returns.index <= split_ts]
+    test_daily_returns = daily_returns.loc[daily_returns.index > split_ts]
     return train_daily_returns, test_daily_returns
